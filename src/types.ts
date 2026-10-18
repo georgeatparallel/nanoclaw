@@ -28,6 +28,7 @@ export interface AllowedRoot {
 }
 
 export interface ContainerConfig {
+  webSearch?: 'parallel' | 'builtin' | 'disabled'; // Parallel is the unconfigured skill default
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000 (5 minutes)
   claudeMdSource?: string; // Absolute host path to a file that overrides the group's CLAUDE.md via bind mount

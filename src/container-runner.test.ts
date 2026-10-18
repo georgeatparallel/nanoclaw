@@ -130,6 +130,46 @@ function emitOutputMarker(
   proc.stdout.push(`${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`);
 }
 
+describe('container web search selection', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  it.each(['parallel', 'builtin', 'disabled'] as const)(
+    'passes the saved %s choice to the container',
+    async (webSearch) => {
+      const result = runContainerAgent(
+        { ...testGroup, containerConfig: { webSearch } },
+        testInput,
+        () => {},
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(JSON.parse(fakeProc.stdin.read().toString()).webSearch).toBe(
+        webSearch,
+      );
+      fakeProc.emit('close', 0);
+      await result;
+    },
+  );
+
+  it('lets a caller explicitly override the saved choice', async () => {
+    const result = runContainerAgent(
+      { ...testGroup, containerConfig: { webSearch: 'builtin' } },
+      { ...testInput, webSearch: 'disabled' },
+      () => {},
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(JSON.parse(fakeProc.stdin.read().toString()).webSearch).toBe(
+      'disabled',
+    );
+    fakeProc.emit('close', 0);
+    await result;
+  });
+});
+
 describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();

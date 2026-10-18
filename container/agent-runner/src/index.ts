@@ -19,6 +19,7 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { resolveWebSearch, WebSearchMode } from './web-search.js';
 
 interface ContainerInput {
   prompt: string;
@@ -29,6 +30,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  webSearch?: WebSearchMode;
 }
 
 interface ContainerOutput {
@@ -393,6 +395,10 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const search = resolveWebSearch({ mode: containerInput.webSearch, env: sdkEnv });
+  const appendedInstructions = [globalClaudeMd, search.instructions].filter(Boolean).join('\n\n');
+  log(`Web search provider: ${search.provider}`);
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -400,24 +406,26 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
-      systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+      systemPrompt: appendedInstructions
+        ? { type: 'preset' as const, preset: 'claude_code' as const, append: appendedInstructions }
         : undefined,
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
+        ...search.allowedTools,
         'Task', 'TaskOutput', 'TaskStop',
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*'
       ],
+      disallowedTools: search.disallowedTools,
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
       mcpServers: {
+        ...search.mcpServers,
         nanoclaw: {
           command: 'node',
           args: [mcpServerPath],

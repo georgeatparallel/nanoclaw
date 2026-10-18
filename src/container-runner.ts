@@ -43,6 +43,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  webSearch?: 'parallel' | 'builtin' | 'disabled';
 }
 
 export interface ContainerOutput {
@@ -363,7 +364,12 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
-    container.stdin.write(JSON.stringify(input));
+    container.stdin.write(
+      JSON.stringify({
+        ...input,
+        webSearch: input.webSearch ?? group.containerConfig?.webSearch,
+      }),
+    );
     container.stdin.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
