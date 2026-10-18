@@ -28,6 +28,7 @@ let gid;
 const createdDirectories = [];
 const originalOwnership = [];
 let fixturePrepared = false;
+let projectFixtureCreated = false;
 
 async function ownTree(file) {
   if (uid === undefined) return;
@@ -98,6 +99,8 @@ after(async () => {
   if (!enabled) return;
   if (scratch) await fs.rm(scratch, { recursive: true, force: true });
   if (fixturePrepared) await fs.rm(path.join(ipc, '_close'), { force: true });
+  if (projectFixtureCreated)
+    await fs.rm(path.join(group, '.claude'), { recursive: true, force: true });
   for (const directory of createdDirectories.reverse())
     await fs.rmdir(directory);
   if (uid !== undefined) {
@@ -176,18 +179,58 @@ function sendMessage(response, content, stopReason) {
 }
 
 async function exercise(mode) {
-  const normalFlow = mode === 'normal' || mode === 'credentials';
+  const credentialKeys = {
+    credentials: 'saved-settings-fixture-key',
+    'global-credentials': 'legacy-global-fixture-key',
+    'config-dir': 'custom-config-settings-fixture-key',
+  };
+  const expectedKey = credentialKeys[mode];
+  const normalFlow = mode === 'normal' || Boolean(expectedKey);
   await fs.rm(path.join(ipc, '_close'), { force: true });
   const home = path.join(scratch, `home-${mode}`);
   await fs.mkdir(home);
-  if (mode === 'credentials') {
-    await fs.mkdir(path.join(home, '.claude'));
-    await fs.writeFile(
-      path.join(home, '.claude', 'settings.json'),
-      JSON.stringify({
-        env: { PARALLEL_API_KEY: 'saved-settings-fixture-key' },
-      }),
-    );
+  const configDir =
+    mode === 'config-dir'
+      ? path.join(home, 'custom-config')
+      : path.join(home, '.claude');
+  if (expectedKey) {
+    await fs.mkdir(configDir);
+    if (mode === 'global-credentials') {
+      await fs.writeFile(
+        path.join(configDir, '.config.json'),
+        JSON.stringify({ env: { PARALLEL_API_KEY: expectedKey } }),
+      );
+      await fs.writeFile(
+        path.join(home, '.claude.json'),
+        JSON.stringify({ env: { PARALLEL_API_KEY: 'ignored-fallback-key' } }),
+      );
+    } else {
+      const globalFile =
+        mode === 'config-dir'
+          ? path.join(configDir, '.claude.json')
+          : path.join(home, '.claude.json');
+      await fs.writeFile(
+        globalFile,
+        JSON.stringify({
+          env: { PARALLEL_API_KEY: 'global-lower-precedence-key' },
+        }),
+      );
+      await fs.writeFile(
+        path.join(configDir, 'settings.json'),
+        JSON.stringify({ env: { PARALLEL_API_KEY: expectedKey } }),
+      );
+    }
+    if (mode === 'credentials') {
+      await fs.mkdir(path.join(group, '.claude'));
+      projectFixtureCreated = true;
+      await fs.writeFile(
+        path.join(group, '.claude', 'settings.json'),
+        JSON.stringify({
+          env: { PARALLEL_API_KEY: 'project-lower-precedence-key' },
+        }),
+      );
+      await ownTree(path.join(group, '.claude'));
+    }
   }
   await ownTree(home);
   const observations = [];
@@ -309,7 +352,23 @@ async function exercise(mode) {
     }
     modelRequests.push(body);
     const serialized = JSON.stringify(body.messages);
-    if (turn === 0) {
+    if (expectedKey && turn === 0) {
+      sendMessage(
+        response,
+        {
+          type: 'tool_use',
+          id: 'tool_env_precedence_fixture',
+          name: 'Bash',
+          input: { command: 'printf \'%s\' "$PARALLEL_API_KEY"' },
+        },
+        'tool_use',
+      );
+    } else if (turn === (expectedKey ? 1 : 0)) {
+      if (expectedKey)
+        assert.ok(
+          serialized.includes(expectedKey),
+          'the real CLI applies the same effective credential precedence',
+        );
       assert.ok(
         body.tools.some(
           (tool) => tool.name === 'mcp__parallel-search__web_search',
@@ -336,7 +395,7 @@ async function exercise(mode) {
         },
         'tool_use',
       );
-    } else if (normalFlow && turn === 1) {
+    } else if (normalFlow && turn === (expectedKey ? 2 : 1)) {
       assert.ok(
         serialized.includes(sourceUrl),
         'search result reaches the next model request',
@@ -397,9 +456,10 @@ async function exercise(mode) {
       ANTHROPIC_API_KEY: 'scripted-model-fixture-only',
       ANTHROPIC_MODEL: 'claude-sonnet-4-6',
       NANOCLAW_SEARCH_MCP_URL: `${mcp.url}/search-fixture/mcp`,
-      ...(mode === 'credentials'
+      ...(expectedKey
         ? { PARALLEL_API_KEY: 'inherited-environment-fixture-key' }
         : {}),
+      ...(mode === 'config-dir' ? { CLAUDE_CONFIG_DIR: configDir } : {}),
       MCP_TOOL_TIMEOUT: mode === 'timeout' ? '1000' : '30000',
       ENABLE_TOOL_SEARCH: 'false',
       MAX_THINKING_TOKENS: '0',
@@ -474,10 +534,8 @@ async function exercise(mode) {
       assert.equal(item.userAgent, userAgent);
       assert.equal(
         item.authorization,
-        mode === 'credentials'
-          ? 'Bearer saved-settings-fixture-key'
-          : undefined,
-        mode === 'credentials'
+        expectedKey ? `Bearer ${expectedKey}` : undefined,
+        expectedKey
           ? 'saved settings credential overrides inherited environment on every MCP request'
           : 'anonymous MCP call has no saved/environment credential',
       );
@@ -530,10 +588,25 @@ async function exercise(mode) {
     await model.close();
     await mcp.close();
     await fs.rm(path.join(ipc, '_close'), { force: true });
+    if (projectFixtureCreated) {
+      await fs.rm(path.join(group, '.claude'), {
+        recursive: true,
+        force: true,
+      });
+      projectFixtureCreated = false;
+    }
   }
 }
 
-for (const mode of ['normal', 'credentials', 'error', 'timeout', 'cancel']) {
+for (const mode of [
+  'normal',
+  'credentials',
+  'global-credentials',
+  'config-dir',
+  'error',
+  'timeout',
+  'cancel',
+]) {
   test(
     `actual SDK caller: ${mode} (scripted model, local MCP)`,
     { skip: !enabled, timeout: 60000 },

@@ -10,7 +10,7 @@ import {
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-search-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const options = { home: path.join(root, 'home'), cwd: path.join(root, 'group'), env: {}, managedSettingsPath: path.join(root, 'managed-settings.json') };
+  const options = { home: path.join(root, 'home'), cwd: path.join(root, 'group'), env: {}, managedSettingsPath: path.join(root, 'managed-settings.json'), managedMcpPath: path.join(root, 'managed-mcp.json') };
   function save(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify(value));
@@ -111,9 +111,11 @@ test('managed web denials and MCP restrictions suppress automatic registration',
 test('saved settings credentials follow SDK source precedence over inherited environment', (t) => {
   const f = fixture(t);
   const inherited = { PARALLEL_API_KEY: 'inherited-key' };
+  f.save(path.join(f.options.home, '.claude.json'), { env: { PARALLEL_API_KEY: 'global-key' } });
+  assert.equal(f.resolve({ env: inherited }).mcpServers['parallel-search'].headers.Authorization, 'Bearer global-key');
   const sources = [
-    path.join(f.options.home, '.claude', 'settings.json'),
     path.join(f.options.cwd, '.claude', 'settings.json'),
+    path.join(f.options.home, '.claude', 'settings.json'),
     path.join(f.options.cwd, '.claude', 'settings.local.json'),
     f.options.managedSettingsPath,
   ];
@@ -124,6 +126,50 @@ test('saved settings credentials follow SDK source precedence over inherited env
   assert.equal(inherited.PARALLEL_API_KEY, 'inherited-key', 'the supplied SDK environment is not mutated');
   f.save(sources[3], { env: { PARALLEL_API_KEY: '' } });
   assert.equal(f.resolve({ env: inherited }).mcpServers['parallel-search'].headers.Authorization, undefined, 'an intentional empty setting removes authentication');
+});
+
+test('legacy global configuration takes precedence over the global fallback', (t) => {
+  const f = fixture(t);
+  f.save(path.join(f.options.home, '.claude.json'), { env: { PARALLEL_API_KEY: 'fallback-key' } });
+  f.save(path.join(f.options.home, '.claude', '.config.json'), { env: { PARALLEL_API_KEY: 'legacy-key' } });
+  assert.equal(f.resolve().mcpServers['parallel-search'].headers.Authorization, 'Bearer legacy-key');
+  f.save(path.join(f.options.home, '.claude', '.config.json'), { mcpServers: { 'parallel-search': { type: 'http', url: 'https://saved.example/mcp' } } });
+  assert.equal(f.resolve({ mode: 'parallel' }).provider, 'configured');
+});
+
+test('an explicit Claude config directory preserves its global servers and settings', (t) => {
+  const f = fixture(t);
+  const configDir = path.join(f.options.home, 'alternate-config');
+  const env = { CLAUDE_CONFIG_DIR: configDir, PARALLEL_API_KEY: 'inherited-key' };
+  f.save(path.join(configDir, '.claude.json'), { env: { PARALLEL_API_KEY: 'config-global-key' } });
+  assert.equal(f.resolve({ env }).mcpServers['parallel-search'].headers.Authorization, 'Bearer config-global-key');
+  f.save(path.join(configDir, 'settings.json'), { env: { PARALLEL_API_KEY: 'config-settings-key' } });
+  assert.equal(f.resolve({ env }).mcpServers['parallel-search'].headers.Authorization, 'Bearer config-settings-key');
+  f.save(path.join(configDir, '.claude.json'), { mcpServers: { chosen: { type: 'http', url: 'https://chosen.example/mcp' } } });
+  assert.equal(f.resolve({ env }).provider, 'configured');
+});
+
+
+test('ancestor and repository-root MCP declarations remain configured choices', (t) => {
+  const f = fixture(t);
+  f.save(path.join(path.dirname(f.options.cwd), '.mcp.json'), { mcpServers: { parent: { type: 'http', url: 'https://parent.example/mcp' } } });
+  assert.equal(f.resolve().provider, 'configured');
+  fs.rmSync(path.join(path.dirname(f.options.cwd), '.mcp.json'));
+  f.save(path.join(f.options.home, '.claude.json'), { projects: { '/saved/repository-root': { mcpServers: { chosen: { type: 'http', url: 'https://root.example/mcp' } } } } });
+  assert.equal(f.resolve().provider, 'configured');
+});
+
+test('managed MCP and active plugins retain ownership of server registration', (t) => {
+  const f = fixture(t);
+  f.save(f.options.managedMcpPath, { mcpServers: {} });
+  assert.equal(f.resolve({ mode: 'parallel' }).provider, 'configured');
+  fs.rmSync(f.options.managedMcpPath);
+  f.save(path.join(f.options.home, '.claude', 'settings.json'), { enabledPlugins: { 'research@installed': true } });
+  assert.equal(f.resolve({ mode: 'parallel' }).provider, 'configured');
+  f.save(path.join(f.options.home, '.claude', 'settings.json'), { enabledPlugins: { 'research@installed': ['^1.0.0'] } });
+  assert.equal(f.resolve({ mode: 'parallel' }).provider, 'configured');
+  f.save(path.join(f.options.home, '.claude', 'settings.json'), { enabledPlugins: { 'research@installed': false } });
+  assert.equal(f.resolve().provider, 'parallel');
 });
 
 test('malformed saved configuration fails rather than selecting another provider', (t) => {

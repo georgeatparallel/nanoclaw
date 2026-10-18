@@ -35,7 +35,8 @@ edits; those customizations remain user choices.
 ## 2. Choose web search behavior
 
 The runtime uses Parallel for an unconfigured group. It does not add a new default
-when the group already has saved MCP servers or has denied web tools. Existing
+when the installation already has saved MCP servers, enabled plugins, managed
+MCP registration, or denied web tools. Existing
 MCP configurations continue through the Claude SDK's normal settings loading,
 including their authentication. A failed configured provider does not trigger
 fallback to anonymous Parallel.
@@ -51,10 +52,11 @@ For a group that needs an explicit choice, set its registered
 
 Retain all other group settings. Existing web-tool denials and a disabled
 `parallel-search` server take precedence over automatic registration, including
-when `parallel` is selected. Other custom tools retain their own permissions. Managed MCP allow/deny policies
-suppress automatic registration; configure an approved server through the managed
-MCP settings instead.
-When Parallel is selected, the built-in web tools are unavailable; choose
+when `parallel` is selected. Other custom tools retain their own permissions. Managed MCP policies and enabled plugins
+retain ownership of server registration; configure an approved Parallel server
+through those settings instead of adding a generated default.
+When the runtime registers the default Parallel server, the built-in web tools
+are unavailable; choose
 `builtin` for workflows that depend on their response format or behavior.
 
 The default server is `https://search.parallel.ai/mcp`. An existing

@@ -20,6 +20,7 @@ interface SavedConfig {
   disabledMcpjsonServers?: string[];
   allowedMcpServers?: unknown[];
   deniedMcpServers?: unknown[];
+  enabledPlugins?: Record<string, boolean | string[]>;
 }
 
 function readConfig(file: string): SavedConfig {
@@ -28,7 +29,13 @@ function readConfig(file: string): SavedConfig {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error('Expected a JSON object');
     }
-    for (const key of ['mcpServers', 'projects', 'permissions', 'env']) {
+    for (const key of [
+      'mcpServers',
+      'projects',
+      'permissions',
+      'env',
+      'enabledPlugins',
+    ]) {
       if (
         value[key] !== undefined &&
         (!value[key] ||
@@ -68,6 +75,25 @@ function readConfig(file: string): SavedConfig {
   }
 }
 
+function ancestorDirectories(cwd: string): string[] {
+  const roots = [path.resolve(cwd)];
+  try {
+    roots.push(fs.realpathSync(cwd));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const directories = new Set<string>();
+  for (let directory of roots) {
+    while (!directories.has(directory)) {
+      directories.add(directory);
+      const parent = path.dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+  }
+  return [...directories];
+}
+
 /** Resolve the skill's default without replacing saved MCP servers or denials. */
 export function resolveWebSearch(
   options: {
@@ -76,6 +102,7 @@ export function resolveWebSearch(
     home?: string;
     env?: NodeJS.ProcessEnv;
     managedSettingsPath?: string;
+    managedMcpPath?: string;
   } = {},
 ): {
   provider: WebSearchMode | 'configured';
@@ -87,30 +114,54 @@ export function resolveWebSearch(
   const cwd = options.cwd ?? '/workspace/group';
   const home = options.home ?? os.homedir();
   const env = options.env ?? process.env;
-  const user = readConfig(path.join(home, '.claude.json'));
-  const project = readConfig(path.join(cwd, '.mcp.json'));
-  const projectUser = user.projects?.[cwd] ?? {};
+  const configDir = path.resolve(
+    cwd,
+    env.CLAUDE_CONFIG_DIR ?? path.join(home, '.claude'),
+  );
+  const legacyConfig = path.join(configDir, '.config.json');
+  const user = readConfig(
+    fs.existsSync(legacyConfig)
+      ? legacyConfig
+      : path.join(env.CLAUDE_CONFIG_DIR ? configDir : home, '.claude.json'),
+  );
+  const projects = ancestorDirectories(cwd).map((directory) =>
+    readConfig(path.join(directory, '.mcp.json')),
+  );
+  // The SDK owns repository-root and realpath keys. Conservatively preserve any
+  // saved project MCP declaration instead of guessing which key it will select.
+  const projectConfigs = Object.values(user.projects ?? {});
   const settings = [
-    readConfig(path.join(home, '.claude', 'settings.json')),
     readConfig(path.join(cwd, '.claude', 'settings.json')),
+    readConfig(path.join(configDir, 'settings.json')),
     readConfig(path.join(cwd, '.claude', 'settings.local.json')),
     readConfig(
       options.managedSettingsPath ?? '/etc/claude-code/managed-settings.json',
     ),
   ];
   // The CLI applies merged settings.env over the inherited environment. Match
-  // its user < project < local < managed precedence before creating MCP headers.
-  let effectiveEnv = { ...env };
+  // its explicit project < user < local < managed source order before headers.
+  let effectiveEnv = { ...env, ...user.env };
   for (const config of settings)
     effectiveEnv = { ...effectiveEnv, ...config.env };
-  const savedServers = [user, projectUser, project].flatMap((config) =>
-    Object.keys(config.mcpServers ?? {}),
+  const savedServers = [user, ...projectConfigs, ...projects].flatMap(
+    (config) => Object.keys(config.mcpServers ?? {}),
   );
   const denied = settings.flatMap((config) => config.permissions?.deny ?? []);
-  const disabledServers = [user, projectUser, ...settings].flatMap((config) => [
-    ...(config.disabledMcpServers ?? []),
-    ...(config.disabledMcpjsonServers ?? []),
-  ]);
+  const disabledServers = [user, ...projectConfigs, ...settings].flatMap(
+    (config) => [
+      ...(config.disabledMcpServers ?? []),
+      ...(config.disabledMcpjsonServers ?? []),
+    ],
+  );
+  const managedMcpPath =
+    options.managedMcpPath ?? '/etc/claude-code/managed-mcp.json';
+  const managedMcp = fs.existsSync(managedMcpPath);
+  if (managedMcp) readConfig(managedMcpPath); // A malformed policy must fail, not fall back.
+  const activePlugins = [user, ...settings].some((config) =>
+    Object.values(config.enabledPlugins ?? {}).some(
+      (enabled) => enabled === true || Array.isArray(enabled),
+    ),
+  );
   const searchDenied =
     denied.some(
       (rule: unknown) =>
@@ -155,6 +206,8 @@ export function resolveWebSearch(
   // Existing MCP configuration is intentional. The SDK continues to load it
   // through its normal settings sources, including authentication and disabling.
   if (
+    managedMcp ||
+    activePlugins ||
     savedServers.includes(SERVER_NAME) ||
     (mode === undefined && savedServers.length > 0)
   ) {
