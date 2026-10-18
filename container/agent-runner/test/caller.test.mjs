@@ -176,9 +176,19 @@ function sendMessage(response, content, stopReason) {
 }
 
 async function exercise(mode) {
+  const normalFlow = mode === 'normal' || mode === 'credentials';
   await fs.rm(path.join(ipc, '_close'), { force: true });
   const home = path.join(scratch, `home-${mode}`);
   await fs.mkdir(home);
+  if (mode === 'credentials') {
+    await fs.mkdir(path.join(home, '.claude'));
+    await fs.writeFile(
+      path.join(home, '.claude', 'settings.json'),
+      JSON.stringify({
+        env: { PARALLEL_API_KEY: 'saved-settings-fixture-key' },
+      }),
+    );
+  }
   await ownTree(home);
   const observations = [];
   const modelRequests = [];
@@ -326,7 +336,7 @@ async function exercise(mode) {
         },
         'tool_use',
       );
-    } else if (mode === 'normal' && turn === 1) {
+    } else if (normalFlow && turn === 1) {
       assert.ok(
         serialized.includes(sourceUrl),
         'search result reaches the next model request',
@@ -345,7 +355,7 @@ async function exercise(mode) {
         'tool_use',
       );
     } else {
-      if (mode === 'normal')
+      if (normalFlow)
         assert.ok(
           serialized.includes('the answer is 42'),
           'fetch content reaches the model',
@@ -365,10 +375,9 @@ async function exercise(mode) {
         response,
         {
           type: 'text',
-          text:
-            mode === 'normal'
-              ? `Fixture answer: 42. Source: ${sourceUrl}`
-              : `Handled ${mode} from the search tool.`,
+          text: normalFlow
+            ? `Fixture answer: 42. Source: ${sourceUrl}`
+            : `Handled ${mode} from the search tool.`,
         },
         'end_turn',
       );
@@ -388,6 +397,9 @@ async function exercise(mode) {
       ANTHROPIC_API_KEY: 'scripted-model-fixture-only',
       ANTHROPIC_MODEL: 'claude-sonnet-4-6',
       NANOCLAW_SEARCH_MCP_URL: `${mcp.url}/search-fixture/mcp`,
+      ...(mode === 'credentials'
+        ? { PARALLEL_API_KEY: 'inherited-environment-fixture-key' }
+        : {}),
       MCP_TOOL_TIMEOUT: mode === 'timeout' ? '1000' : '30000',
       ENABLE_TOOL_SEARCH: 'false',
       MAX_THINKING_TOKENS: '0',
@@ -413,9 +425,7 @@ async function exercise(mode) {
   child.stdout.on('data', (chunk) => {
     stdout += chunk;
     if (
-      stdout.includes(
-        mode === 'normal' ? 'Fixture answer: 42.' : `Handled ${mode}`,
-      )
+      stdout.includes(normalFlow ? 'Fixture answer: 42.' : `Handled ${mode}`)
     ) {
       fs.writeFile(path.join(ipc, '_close'), '').catch(() => {});
     }
@@ -464,8 +474,12 @@ async function exercise(mode) {
       assert.equal(item.userAgent, userAgent);
       assert.equal(
         item.authorization,
-        undefined,
-        'anonymous MCP call has no saved/environment credential',
+        mode === 'credentials'
+          ? 'Bearer saved-settings-fixture-key'
+          : undefined,
+        mode === 'credentials'
+          ? 'saved settings credential overrides inherited environment on every MCP request'
+          : 'anonymous MCP call has no saved/environment credential',
       );
     }
     if (mode === 'cancel') {
@@ -483,13 +497,13 @@ async function exercise(mode) {
         assert.ok(disconnected, 'timeout aborts the pending HTTP request');
       assert.ok(
         stdout.includes(
-          mode === 'normal'
+          normalFlow
             ? `Fixture answer: 42. Source: ${sourceUrl}`
             : `Handled ${mode}`,
         ),
         stdout,
       );
-      if (mode === 'normal') {
+      if (normalFlow) {
         assert.deepEqual(
           calls.map((call) => call.params.name),
           ['web_search', 'web_fetch'],
@@ -519,7 +533,7 @@ async function exercise(mode) {
   }
 }
 
-for (const mode of ['normal', 'error', 'timeout', 'cancel']) {
+for (const mode of ['normal', 'credentials', 'error', 'timeout', 'cancel']) {
   test(
     `actual SDK caller: ${mode} (scripted model, local MCP)`,
     { skip: !enabled, timeout: 60000 },

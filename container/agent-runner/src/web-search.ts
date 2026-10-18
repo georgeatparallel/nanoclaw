@@ -12,6 +12,7 @@ const PARALLEL_TOOLS = `mcp__${SERVER_NAME}__*`;
 const BUILTIN_TOOLS = ['WebSearch', 'WebFetch'];
 
 interface SavedConfig {
+  env?: Record<string, string>;
   mcpServers?: Record<string, unknown>;
   projects?: Record<string, SavedConfig>;
   permissions?: { deny?: string[] };
@@ -27,7 +28,7 @@ function readConfig(file: string): SavedConfig {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       throw new Error('Expected a JSON object');
     }
-    for (const key of ['mcpServers', 'projects', 'permissions']) {
+    for (const key of ['mcpServers', 'projects', 'permissions', 'env']) {
       if (
         value[key] !== undefined &&
         (!value[key] ||
@@ -36,6 +37,12 @@ function readConfig(file: string): SavedConfig {
       ) {
         throw new Error(`Expected an object for ${key}`);
       }
+    }
+    if (
+      value.env &&
+      Object.values(value.env).some((item) => typeof item !== 'string')
+    ) {
+      throw new Error('Expected string environment values');
     }
     for (const list of [
       value.permissions?.deny,
@@ -91,6 +98,11 @@ export function resolveWebSearch(
       options.managedSettingsPath ?? '/etc/claude-code/managed-settings.json',
     ),
   ];
+  // The CLI applies merged settings.env over the inherited environment. Match
+  // its user < project < local < managed precedence before creating MCP headers.
+  let effectiveEnv = { ...env };
+  for (const config of settings)
+    effectiveEnv = { ...effectiveEnv, ...config.env };
   const savedServers = [user, projectUser, project].flatMap((config) =>
     Object.keys(config.mcpServers ?? {}),
   );
@@ -154,7 +166,9 @@ export function resolveWebSearch(
     };
   }
 
-  const url = new URL(env.NANOCLAW_SEARCH_MCP_URL ?? PARALLEL_SEARCH_URL);
+  const url = new URL(
+    effectiveEnv.NANOCLAW_SEARCH_MCP_URL ?? PARALLEL_SEARCH_URL,
+  );
   if (
     url.username ||
     url.password ||
@@ -171,8 +185,8 @@ export function resolveWebSearch(
   }
   const headers: Record<string, string> = { 'User-Agent': SEARCH_USER_AGENT };
   // Retain credentials from earlier customized installations when present.
-  if (env.PARALLEL_API_KEY)
-    headers.Authorization = `Bearer ${env.PARALLEL_API_KEY}`;
+  if (effectiveEnv.PARALLEL_API_KEY)
+    headers.Authorization = `Bearer ${effectiveEnv.PARALLEL_API_KEY}`;
   return {
     provider: 'parallel',
     mcpServers: { [SERVER_NAME]: { type: 'http', url: url.href, headers } },

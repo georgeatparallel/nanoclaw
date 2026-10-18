@@ -108,6 +108,24 @@ test('managed web denials and MCP restrictions suppress automatic registration',
   }
 });
 
+test('saved settings credentials follow SDK source precedence over inherited environment', (t) => {
+  const f = fixture(t);
+  const inherited = { PARALLEL_API_KEY: 'inherited-key' };
+  const sources = [
+    path.join(f.options.home, '.claude', 'settings.json'),
+    path.join(f.options.cwd, '.claude', 'settings.json'),
+    path.join(f.options.cwd, '.claude', 'settings.local.json'),
+    f.options.managedSettingsPath,
+  ];
+  for (const [index, file] of sources.entries()) {
+    f.save(file, { env: { PARALLEL_API_KEY: `saved-key-${index}` } });
+    assert.equal(f.resolve({ env: inherited }).mcpServers['parallel-search'].headers.Authorization, `Bearer saved-key-${index}`);
+  }
+  assert.equal(inherited.PARALLEL_API_KEY, 'inherited-key', 'the supplied SDK environment is not mutated');
+  f.save(sources[3], { env: { PARALLEL_API_KEY: '' } });
+  assert.equal(f.resolve({ env: inherited }).mcpServers['parallel-search'].headers.Authorization, undefined, 'an intentional empty setting removes authentication');
+});
+
 test('malformed saved configuration fails rather than selecting another provider', (t) => {
   const f = fixture(t);
   fs.mkdirSync(f.options.cwd, { recursive: true });
