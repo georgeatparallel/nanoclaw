@@ -60,9 +60,9 @@ When Parallel is selected, the built-in web tools are unavailable; choose
 The default server is `https://search.parallel.ai/mcp`. An existing
 `PARALLEL_API_KEY` in the agent environment is retained as Bearer authentication;
 no key is collected or copied into a container by this skill. Existing OneCLI
-credential policies remain under the user's control. The optional service
-environment variable `NANOCLAW_SEARCH_MCP_URL` selects a different HTTPS endpoint
-(or HTTP on localhost for local testing). Invalid endpoints fail without fallback.
+credential policies remain under the user's control. For a custom endpoint, retain a `parallel-search` server in the group's normal
+saved MCP configuration; the resolver leaves its endpoint and authentication
+unchanged.
 
 This skill supplies Search MCP only. Keep an existing Task MCP setup and its
 approval rules for deep research; do not add or call paid Task tools implicitly.
